@@ -2,7 +2,7 @@ import os
 import json
 import random
 import logging
-from collections import defaultdict
+from collections import defaultdict, Counter
 from PIL import Image
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
@@ -75,6 +75,24 @@ class IndoFashionDataset(Dataset):
             image = self.transform(image)
 
         return image, label_idx
+
+
+def class_weights_from_full_train(base_dir, label_map):
+    """Inverse-frequency weights (mean 1.0) from full train JSONL counts.
+
+    Use this when training on a balanced subset so rare classes in the full
+    dataset still get higher loss weight.
+    """
+    path = os.path.join(base_dir, "train_data.json")
+    data = load_data(path)
+    cnt = Counter(lbl for _, lbl in data)
+    num_classes = len(label_map)
+    counts = torch.ones(num_classes, dtype=torch.float32)
+    for name, idx in label_map.items():
+        counts[idx] = float(max(cnt.get(name, 0), 1))
+    w = counts.sum() / (num_classes * counts)
+    w = w / w.mean()
+    return w
 
 
 def get_transforms():

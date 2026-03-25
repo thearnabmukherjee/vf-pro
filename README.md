@@ -1,21 +1,22 @@
 # Indo Fashion Classifier
 
-Image classification for 15 Indian clothing categories using transfer learning with EfficientNet-B0, CUDA training, FastAPI inference, and a Streamlit UI.
+Image classification for **15** Indian clothing categories using **EfficientNet-B0** (ImageNet pretrained), **CUDA** training with mixed precision, **class-weighted loss**, a **FastAPI** service, and a **Streamlit** UI.
 
 ## Features
 
-- EfficientNet-B0 pretrained on ImageNet
-- Two-stage training (warmup + full fine-tuning)
-- CUDA-only training (fails fast if GPU is unavailable)
-- Mixed precision (AMP) for faster GPU training
-- Parallel dataloading with worker/prefetch support
-- Optional stratified training subset (`samples_per_class`)
-- FastAPI prediction service
-- Streamlit frontend for interactive testing
+- **Transfer learning**: EfficientNet-B0 via `efficientnet_pytorch`
+- **Two-stage training**: frozen backbone warmup (5 epochs), then full fine-tuning at lower LR
+- **CUDA-only training**: `train.py` asserts a GPU is available
+- **Mixed precision (AMP)**: `autocast` + `GradScaler`
+- **Fast dataloading**: `num_workers`, `pin_memory`, `persistent_workers`, `prefetch_factor`
+- **Stratified subset**: `SAMPLES_PER_CLASS` in `train.py` (or `None` for full training set)
+- **Class-weighted loss**: inverse frequency from **full** `train_data.json` when `USE_CLASS_WEIGHTS = True` (helps when the training subset is balanced per class)
+- **Inference**: `/predict` returns top-3, `low_confidence` flag, and optional guidance when below a threshold
+- **Streamlit**: warnings + top-3 table when the API reports low confidence
 
 ## Dataset
 
-Dataset root is expected at `Fashion/` with this structure:
+Expected layout under `Fashion/` (paths are relative to the project root):
 
 ```text
 Fashion/
@@ -28,52 +29,58 @@ Fashion/
 └── test_data.json
 ```
 
-Each line in `*_data.json` is JSON with at least:
+Each line in `*_data.json` is one JSON object with at least:
 
-- `image_path` (relative path under `Fashion/`)
-- `class_label`
+- `image_path` — path relative to `Fashion/`
+- `class_label` — one of 15 category names
 
-The project uses 15 classes total.
+**Git:** `Fashion/` is listed in `.gitignore` (large images). Clone the repo, then place or download the dataset locally before training.
 
-## Project Structure
+Approximate full split sizes (reference): ~91k train / 7.5k val / 7.5k test. Class counts in the full train set are **imbalanced**; subset training uses stratified sampling per class.
+
+## Project structure
 
 ```text
 vf-pro/
-├── Fashion/
+├── Fashion/                 # local only (gitignored)
 ├── results/
+│   ├── best_model.pth
+│   ├── label_map.json
+│   ├── training_history.json
+│   ├── classification_report.txt   # after evaluate.py
+│   ├── confusion_matrix.png
+│   └── plots/
 ├── src/
 │   ├── __init__.py
-│   ├── app.py
-│   ├── api.py
-│   ├── dataset.py
-│   ├── evaluate.py
+│   ├── dataset.py          # loaders, subset, class_weights_from_full_train
 │   ├── model.py
 │   ├── train.py
-│   └── utils.py
+│   ├── evaluate.py
+│   ├── utils.py
+│   ├── api.py
+│   └── app.py
 ├── requirements.txt
 └── README.md
 ```
 
 ## Setup
 
-### 1) Create and activate virtual environment
-
-Windows PowerShell:
+### 1) Virtual environment (Windows PowerShell)
 
 ```powershell
 python -m venv venv
 .\venv\Scripts\Activate.ps1
 ```
 
-### 2) Install dependencies
+### 2) Dependencies
 
 ```powershell
 pip install -r requirements.txt
 ```
 
-### 3) Install CUDA PyTorch in the venv (required for training)
+### 3) CUDA PyTorch (required for `train.py`)
 
-This project's training script enforces CUDA.
+Plain `pip install torch` often installs a **CPU-only** wheel on Windows. Use the CUDA index:
 
 ```powershell
 pip uninstall -y torch torchvision
@@ -83,327 +90,155 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 Verify:
 
 ```powershell
-python -c "import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0))"
+python -c "import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else None)"
 ```
 
-Expected:
-- torch version ending with `+cu128`
-- `True` for CUDA availability
-- your NVIDIA GPU name
+Expect `+cu128` in the version string and `True` for CUDA when a GPU is present.
 
-## Training
+## Training (`src/train.py`)
 
-Run from project root:
+From the **project root**:
 
 ```powershell
 python src/train.py
 ```
 
-### Current training configuration (`src/train.py`)
+### Hyperparameters (edit in `train.py`)
 
-- `BATCH_SIZE = 32`
-- `EPOCHS = 25`
-- `WARMUP_EPOCHS = 5`
-- `PATIENCE = 5`
-- `LR = 1e-3` (warmup)
-- `FINETUNE_LR = 1e-4` (after unfreeze)
-- `NUM_WORKERS = 8`
-- `SAMPLES_PER_CLASS = 500` (set `None` for full dataset)
+| Setting | Typical value | Notes |
+|--------|----------------|--------|
+| `BATCH_SIZE` | `32` | |
+| `EPOCHS` | `25` | Early stopping may stop sooner |
+| `WARMUP_EPOCHS` | `5` | Backbone frozen; only head trains |
+| `PATIENCE` | `5` | Early stopping on val loss |
+| `LR` | `0.001` | Warmup phase |
+| `FINETUNE_LR` | `1e-4` | After unfreezing |
+| `NUM_WORKERS` | `8` | Reduce to `4`/`2` on Windows if unstable |
+| `SAMPLES_PER_CLASS` | `1800` in repo | Set to `None` to use **all** training images |
+| `USE_CLASS_WEIGHTS` | `True` | `CrossEntropyLoss` weights from full train counts |
 
-### What makes training faster now
+Outputs:
 
-- CUDA-only device selection
-- AMP (`autocast` + `GradScaler`)
-- `cudnn.benchmark = True`
-- non-blocking host-to-device transfers
-- parallel dataloader workers + prefetch + persistent workers
-- optional stratified subset sampling
+- `results/best_model.pth` — best val accuracy checkpoint
+- `results/label_map.json` — class name → index
+- `results/training_history.json` — per-epoch loss/accuracy
 
-### Notes
+Training uses `multiprocessing.freeze_support()` for Windows spawn compatibility.
 
-- If Windows dataloader stability/performance is inconsistent, reduce `NUM_WORKERS` to `4` or `2`.
-- With `SAMPLES_PER_CLASS = 500`, training uses ~7,500 training images (500 x 15 classes).
+## Preprocessing
 
-## Evaluation
+**Train** (`dataset.py`): resize 224×224, random flip, rotation (15°), color jitter, ImageNet normalize.
 
-Run:
+**Val / test / API**: resize shorter side 256, center crop 224, normalize.
+
+## Evaluation (`src/evaluate.py`)
 
 ```powershell
 python src/evaluate.py
 ```
 
-This script:
-- loads `results/best_model.pth`
-- evaluates on full test split
-- prints overall accuracy and classification report
-- saves report and plots
+Uses **CPU or CUDA** automatically, full **test** loader, writes:
 
-Outputs include:
 - `results/classification_report.txt`
 - `results/confusion_matrix.png`
 - `results/plots/sample_predictions.png`
-- `results/plots/loss_curve.png` and `results/plots/accuracy_curve.png` (if training history exists)
+- `results/plots/loss_curve.png`, `accuracy_curve.png` if `training_history.json` exists
 
-## Inference API (FastAPI)
+## API (`src/api.py`)
 
-File: `src/api.py`
+### Start server
 
-### Start API
-
-From project root:
+From **project root**:
 
 ```powershell
 uvicorn src.api:app --port 8000
 ```
 
-From `src/` folder:
+From **`src/`**:
 
 ```powershell
 uvicorn api:app --port 8000
 ```
 
-Alternative from `src/` folder:
+Or from `src/`:
 
 ```powershell
 uvicorn --app-dir .. src.api:app --port 8000
 ```
 
+### Environment
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `PREDICT_CONFIDENCE_THRESHOLD` | `0.45` | If top softmax probability is below this, `low_confidence` is `true` |
+
 ### Endpoints
 
-- `GET /health` -> API/model status
-- `GET /classes` -> class names
-- `POST /predict` -> image classification
+- `GET /health` — `{ "status": "ok", "model_loaded": bool }`
+- `GET /classes` — class list and count
+- `POST /predict` — multipart field `file` (image)
 
-Example:
+### `POST /predict` response shape
+
+```json
+{
+  "predicted_class": "blouse",
+  "confidence": 0.77,
+  "low_confidence": false,
+  "confidence_threshold": 0.45,
+  "top_3": [
+    { "class": "blouse", "probability": 0.77 },
+    { "class": "gowns", "probability": 0.12 },
+    { "class": "dupattas", "probability": 0.05 }
+  ],
+  "message": null,
+  "all_probabilities": { "...": 0.01 }
+}
+```
+
+When `low_confidence` is `true`, `message` contains short guidance (clearer full-garment photo). `all_probabilities` maps every class name to a probability.
+
+Example curl (adjust path):
 
 ```powershell
 curl -X POST "http://localhost:8000/predict" -F "file=@Fashion\images\test\0.jpeg"
 ```
 
-## Streamlit App
-
-Run:
+## Streamlit (`src/app.py`)
 
 ```powershell
 streamlit run src/app.py
 ```
 
-Open `http://localhost:8501` and upload an image.
+Open `http://localhost:8501`. Set **API URL** in the sidebar (default `http://localhost:8000`).
 
-The app calls the API (default `http://localhost:8000`) and shows:
-- predicted class
-- confidence
-- top-5 probabilities
-- full probability table
+The UI shows prediction, confidence, a **Top 3** table from the API, top-5 bar chart, and full probabilities. If the API sets `low_confidence`, a **warning** is shown with the API `message`.
 
-## Common Issues and Fixes
+## Common issues
 
 ### `AssertionError: CUDA GPU not found`
 
-Cause: CPU-only PyTorch installed in venv.
+Install CUDA PyTorch in the same venv you use for `python src/train.py` (see setup step 3).
 
-Fix:
+### `ModuleNotFoundError: No module named 'src'` (Uvicorn)
 
-```powershell
-pip uninstall -y torch torchvision
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
-```
+Do not run `uvicorn src.api:app` from inside `src/` without fixing the path. Use `uvicorn api:app` from `src/`, or run Uvicorn from the project root.
 
-### `ModuleNotFoundError: No module named 'src'` when starting Uvicorn
+### Training slow or workers flaky on Windows
 
-Cause: running `uvicorn src.api:app` from inside `src/`.
-
-Fix: use one of:
-- `uvicorn api:app --port 8000` (from `src/`)
-- `uvicorn --app-dir .. src.api:app --port 8000` (from `src/`)
-- run from project root and use `uvicorn src.api:app --port 8000`
-
-### Training is still slow on GPU
-
-- Lower `SAMPLES_PER_CLASS` further for quick experiments
-- Reduce image augmentation intensity
-- Tune `NUM_WORKERS` (`2`, `4`, `8`) for your machine
-- Ensure no other heavy GPU workloads are running
+Lower `NUM_WORKERS` in `train.py`. Ensure the dataset lives on a fast disk (SSD).
 
 ## Requirements
 
-See `requirements.txt`:
-- torch, torchvision
-- efficientnet_pytorch
-- scikit-learn
-- matplotlib, seaborn
-- Pillow
-- tqdm
-- fastapi, uvicorn[standard], python-multipart
-- streamlit
-- requests
-# Indo Fashion Classifier
+See `requirements.txt`: `torch`, `torchvision`, `efficientnet_pytorch`, `numpy`, `scikit-learn`, `matplotlib`, `seaborn`, `Pillow`, `tqdm`, `fastapi`, `uvicorn[standard]`, `python-multipart`, `streamlit`, `pandas`, `requests`.
 
-Image classification of 15 categories of Indian fashion using transfer learning with **EfficientNet-B0**.
+## Tech stack
 
-## Approach
-
-- **Transfer Learning**: EfficientNet-B0 pretrained on ImageNet
-- **Warmup + Fine-tune**: Classifier head trained for 5 epochs with frozen backbone, then all layers unfrozen for full fine-tuning at a lower learning rate
-- **Regularization**: Dropout (0.3) before the final classifier layer
-- **Early Stopping**: Training halts if validation loss does not improve for 5 consecutive epochs
-
-## Dataset
-
-The **Indo Fashion** dataset with 15 garment categories:
-
-| Category | Train Count |
-|---|---|
-| women_kurta | 11,694 |
-| saree | 10,791 |
-| blouse | 9,174 |
-| leggings_and_salwars | 7,787 |
-| kurta_men | 6,951 |
-| dupattas | 6,587 |
-| nehru_jackets | 6,491 |
-| lehenga | 5,753 |
-| gowns | 5,211 |
-| petticoats | 4,441 |
-| dhoti_pants | 4,145 |
-| palazzos | 3,375 |
-| mojaris_women | 3,228 |
-| sherwanis | 2,992 |
-| mojaris_men | 2,546 |
-
-**Total**: 91,166 train / 7,500 val / 7,500 test images.
-
-Data files are JSONL format with `image_path` and `class_label` fields.
-
-## Preprocessing
-
-**Training augmentations:**
-- Resize to 224x224
-- Random horizontal flip
-- Random rotation (±15°)
-- Color jitter (brightness, contrast, saturation)
-- Normalize with ImageNet statistics
-
-**Validation / Test:**
-- Resize to 256, center crop to 224
-- Normalize with ImageNet statistics
-
-## Training
-
-| Parameter | Value |
-|---|---|
-| Model | EfficientNet-B0 |
-| Optimizer | Adam |
-| Learning Rate | 0.001 (warmup), 0.0001 (fine-tune) |
-| Scheduler | ReduceLROnPlateau (factor=0.5, patience=2) |
-| Batch Size | 32 |
-| Epochs | 25 (max) |
-| Warmup Epochs | 5 |
-| Early Stopping | Patience = 5 |
-
-## Results
-
-After training, results are saved in the `results/` directory:
-- `best_model.pth` — Best model checkpoint
-- `training_history.json` — Per-epoch metrics
-- `classification_report.txt` — Per-class precision, recall, F1
-- `confusion_matrix.png` — 15x15 heatmap
-- `plots/loss_curve.png` — Train vs val loss
-- `plots/accuracy_curve.png` — Train vs val accuracy
-- `plots/sample_predictions.png` — Grid of example predictions
-
-## API
-
-A **FastAPI** prediction endpoint is provided in `src/api.py`.
-
-**Endpoints:**
-- `GET /health` — Check if model is loaded
-- `GET /classes` — List all 15 class names
-- `POST /predict` — Upload an image, returns predicted class and confidence scores
-
-## Streamlit App
-
-An interactive **Streamlit** frontend is provided in `src/app.py`. Upload an image and get instant predictions with confidence bar charts.
-
-## How to Run
-
-### 1. Install dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### 2. Train the model
-
-```bash
-python src/train.py
-```
-
-This saves the best checkpoint to `results/best_model.pth` and training history to `results/training_history.json`.
-
-### 3. Evaluate on test set
-
-```bash
-python src/evaluate.py
-```
-
-Prints accuracy, classification report, and saves confusion matrix and plots.
-
-### 4. Start the API server
-
-```bash
-uvicorn src.api:app --port 8000
-```
-
-Test with:
-
-```bash
-curl -X POST http://localhost:8000/predict -F "file=@path/to/image.jpg"
-```
-
-### 5. Launch the Streamlit app
-
-```bash
-streamlit run src/app.py
-```
-
-Open the browser at `http://localhost:8501`, upload an image, and see the prediction.
-
-## Project Structure
-
-```
-indo-fashion-classifier/
-├── Fashion/
-│   ├── images/
-│   │   ├── train/
-│   │   ├── val/
-│   │   └── test/
-│   ├── train_data.json
-│   ├── val_data.json
-│   └── test_data.json
-├── src/
-│   ├── dataset.py
-│   ├── model.py
-│   ├── train.py
-│   ├── evaluate.py
-│   ├── utils.py
-│   ├── api.py
-│   └── app.py
-├── results/
-│   ├── plots/
-│   └── confusion_matrix.png
-├── requirements.txt
-└── README.md
-```
-
-## Tech Stack
-
-| Library | Purpose |
-|---|---|
-| PyTorch + torchvision | Training framework |
-| EfficientNet-B0 | Pretrained backbone |
-| scikit-learn | Metrics and confusion matrix |
-| matplotlib + seaborn | Plots and visualizations |
-| Pillow | Image loading |
-| tqdm | Progress bars |
-| FastAPI + uvicorn | REST API for predictions |
-| Streamlit | Interactive web frontend |
+| Piece | Role |
+|-------|------|
+| PyTorch / torchvision | Training & inference |
+| efficientnet_pytorch | EfficientNet-B0 backbone |
+| scikit-learn | Metrics |
+| matplotlib / seaborn | Plots |
+| FastAPI / uvicorn | REST API |
+| Streamlit / pandas / requests | Demo UI |

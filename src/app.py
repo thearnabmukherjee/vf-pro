@@ -82,12 +82,30 @@ if uploaded_file is not None:
 
         predicted_class = result["predicted_class"]
         confidence = result["confidence"]
+        low_conf = result.get("low_confidence", False)
+
+        if low_conf:
+            st.warning(
+                result.get("message")
+                or "Low confidence: the model is unsure. See top alternatives below."
+            )
+            thr = result.get("confidence_threshold")
+            if thr is not None:
+                st.caption(f"Confidence threshold: {float(thr) * 100:.0f}%")
 
         st.metric(
             label="Predicted Class",
             value=predicted_class.replace("_", " ").title(),
         )
         st.metric(label="Confidence", value=f"{confidence * 100:.2f}%")
+
+        top3 = result.get("top_3") or []
+        if top3:
+            st.subheader("Top 3 alternatives")
+            t3 = pd.DataFrame(top3)
+            t3["class"] = t3["class"].str.replace("_", " ").str.title()
+            t3["probability"] = t3["probability"].apply(lambda x: f"{float(x) * 100:.2f}%")
+            st.dataframe(t3, use_container_width=True, hide_index=True)
 
         st.markdown("---")
 

@@ -8,7 +8,7 @@ import torch.nn as nn
 from tqdm import tqdm
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from src.dataset import get_dataloaders
+from src.dataset import get_dataloaders, class_weights_from_full_train
 from src.model import build_model, unfreeze_model
 
 # ── Hyperparameters ──────────────────────────────────────────────────────────
@@ -21,7 +21,9 @@ PATIENCE = 5
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "Fashion")
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "results")
 NUM_WORKERS = 8
-SAMPLES_PER_CLASS = 500  # set to None to use full dataset
+SAMPLES_PER_CLASS = 1800  # set to None to use full dataset
+# Weight loss by inverse frequency using full train_data.json (helps when subset is balanced).
+USE_CLASS_WEIGHTS = True
 
 
 def train_one_epoch(model, loader, criterion, optimizer, device, scaler=None):
@@ -106,9 +108,15 @@ def main():
 
     num_classes = len(label_map)
 
+    if USE_CLASS_WEIGHTS:
+        cw = class_weights_from_full_train(DATA_DIR, label_map).to(device)
+        criterion = nn.CrossEntropyLoss(weight=cw)
+        print("Using class-weighted CrossEntropyLoss (weights from full train counts).")
+    else:
+        criterion = nn.CrossEntropyLoss()
+
     # ── Model ────────────────────────────────────────────────────────────────
     model = build_model(num_classes=num_classes).to(device)
-    criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(
         filter(lambda p: p.requires_grad, model.parameters()), lr=LR,
     )

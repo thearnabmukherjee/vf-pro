@@ -17,6 +17,9 @@ except ModuleNotFoundError:
 
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "results")
 
+# Below this softmax probability, mark prediction as uncertain (override with env).
+CONFIDENCE_THRESHOLD = float(os.environ.get("PREDICT_CONFIDENCE_THRESHOLD", "0.45"))
+
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
 
@@ -95,9 +98,17 @@ async def predict(file: UploadFile = File(...)):
         logits = model(input_tensor)
         probs = F.softmax(logits, dim=1).squeeze(0)
 
-    pred_idx = probs.argmax().item()
+    k = min(3, probs.numel())
+    top_p, top_i = torch.topk(probs, k=k)
+    pred_idx = top_i[0].item()
     predicted_class = idx_to_label[pred_idx]
     confidence = probs[pred_idx].item()
+    low_confidence = confidence < CONFIDENCE_THRESHOLD
+
+    top_3 = [
+        {"class": idx_to_label[idx.item()], "probability": round(p.item(), 6)}
+        for p, idx in zip(top_p, top_i)
+    ]
 
     all_probabilities = {
         idx_to_label[i]: round(probs[i].item(), 6) for i in range(len(idx_to_label))
@@ -106,5 +117,14 @@ async def predict(file: UploadFile = File(...)):
     return {
         "predicted_class": predicted_class,
         "confidence": round(confidence, 6),
+        "low_confidence": low_confidence,
+        "confidence_threshold": CONFIDENCE_THRESHOLD,
+        "top_3": top_3,
+        "message": (
+            "The model is uncertain about this image. Try a clearer photo showing the "
+            "full garment (shoulders to hem), good lighting, and less face crop."
+            if low_confidence
+            else None
+        ),
         "all_probabilities": all_probabilities,
     }
