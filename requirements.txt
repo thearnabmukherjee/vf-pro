@@ -1,0 +1,35 @@
+# -----------------------------------------------------------------------------
+# PyTorch: for GPU training, install CUDA wheels into your venv (do not rely on
+# plain `pip install torch` alone — it often installs CPU-only builds on Windows).
+#
+#   pip uninstall -y torch torchvision
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+#
+# Then: pip install -r requirements.txt  (or install the rest first, then torch as above)
+# -----------------------------------------------------------------------------
+
+torch
+torchvision
+efficientnet_pytorch
+
+# Training / evaluation
+numpy
+scikit-learn
+
+# Plots (evaluate.py, utils.py)
+matplotlib
+seaborn
+
+# Data / images
+Pillow
+tqdm
+
+# API
+fastapi
+uvicorn[standard]
+python-multipart
+
+# Streamlit UI (uses pandas for charts/tables)
+streamlit
+pandas
+requests

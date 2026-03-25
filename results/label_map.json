@@ -1,0 +1,17 @@
+{
+  "blouse": 0,
+  "dhoti_pants": 1,
+  "dupattas": 2,
+  "gowns": 3,
+  "kurta_men": 4,
+  "leggings_and_salwars": 5,
+  "lehenga": 6,
+  "mojaris_men": 7,
+  "mojaris_women": 8,
+  "nehru_jackets": 9,
+  "palazzos": 10,
+  "petticoats": 11,
+  "saree": 12,
+  "sherwanis": 13,
+  "women_kurta": 14
+}
