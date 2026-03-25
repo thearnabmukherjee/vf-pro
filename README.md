@@ -144,6 +144,28 @@ Uses **CPU or CUDA** automatically, full **test** loader, writes:
 - `results/plots/sample_predictions.png`
 - `results/plots/loss_curve.png`, `accuracy_curve.png` if `training_history.json` exists
 
+### Latest evaluation results (reference run)
+
+Figures below are from one test run (`python src/evaluate.py` on the full test split, 7,500 images). They **depend on your checkpoint** (`results/best_model.pth`) and training settings; re-run evaluation after retraining and update this section if you publish fixed numbers.
+
+| Metric | Value |
+|--------|--------|
+| **Overall test accuracy** | **72.43%** |
+| Macro precision | 0.738 |
+| Macro recall | 0.724 |
+| Macro F1 | 0.706 |
+
+**Stronger classes (F1 ≥ 0.85):** blouse, lehenga, mojaris_men, mojaris_women, nehru_jackets.
+
+**Weaker or skewed classes:**
+
+- **`women_kurta`** — recall **0.038**, F1 **0.07**: almost never predicted correctly; likely confused with visually similar categories (e.g. other kurtas, saree, gowns). Needs more data, cleaner labels, or training focused on this class.
+- **`petticoats`** — recall **0.93** but precision **0.46**: the model over-predicts this label; check the confusion matrix for what is being pulled into petticoats.
+- **`gowns`** — F1 **0.54**: still ambiguous vs tops and full-length garments.
+- **`kurta_men`** — precision high, recall **0.51**: many true kurta_men samples missed.
+
+Per-class precision / recall / F1 for that run are saved in `results/classification_report.txt`; see `results/confusion_matrix.png` for error patterns.
+
 ## API (`src/api.py`)
 
 ### Start server
