@@ -96,13 +96,22 @@ def class_weights_from_full_train(base_dir, label_map):
 
 
 def get_transforms():
-    """Return train and val/test transform pipelines."""
+    """Return train and val/test transform pipelines.
+
+    Train uses RandomResizedCrop (not a fixed squash to 224×224) so geometry
+    matches val/test and API inference: resize shorter side, then square crop.
+    Squash-train + crop-infer shifts the distribution and hurts classes like
+    women_kurta vs gowns/petticoats on full-body catalog photos.
+    """
     train_transform = transforms.Compose([
-        transforms.Resize((224, 224)),
+        transforms.RandomResizedCrop(
+            224, scale=(0.7, 1.0), ratio=(0.75, 1.333333),
+        ),
         transforms.RandomHorizontalFlip(),
         transforms.RandomRotation(15),
         transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
         transforms.ToTensor(),
+        transforms.RandomErasing(p=0.1, scale=(0.02, 0.12), ratio=(0.3, 3.3)),
         transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
     ])
 

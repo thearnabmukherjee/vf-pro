@@ -4,6 +4,7 @@ import io
 import torch
 import torch.nn.functional as F
 from PIL import Image
+from torchvision.transforms import functional as TF
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from torchvision import transforms
@@ -19,6 +20,8 @@ RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "results")
 
 # Below this softmax probability, mark prediction as uncertain (override with env).
 CONFIDENCE_THRESHOLD = float(os.environ.get("PREDICT_CONFIDENCE_THRESHOLD", "0.45"))
+# Average probs from center-crop + horizontally flipped image (set 1/true to enable).
+PREDICT_USE_TTA = os.environ.get("PREDICT_USE_TTA", "1").lower() in ("1", "true", "yes")
 
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
@@ -92,11 +95,16 @@ async def predict(file: UploadFile = File(...)):
     except Exception:
         raise HTTPException(status_code=400, detail="Could not read the uploaded image.")
 
-    input_tensor = inference_transform(image).unsqueeze(0).to(device)
-
     with torch.no_grad():
-        logits = model(input_tensor)
-        probs = F.softmax(logits, dim=1).squeeze(0)
+        if PREDICT_USE_TTA:
+            t0 = inference_transform(image).unsqueeze(0).to(device)
+            t1 = inference_transform(TF.hflip(image)).unsqueeze(0).to(device)
+            logits = (model(t0) + model(t1)) * 0.5
+            probs = F.softmax(logits, dim=1).squeeze(0)
+        else:
+            input_tensor = inference_transform(image).unsqueeze(0).to(device)
+            logits = model(input_tensor)
+            probs = F.softmax(logits, dim=1).squeeze(0)
 
     k = min(3, probs.numel())
     top_p, top_i = torch.topk(probs, k=k)

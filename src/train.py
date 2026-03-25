@@ -24,6 +24,8 @@ NUM_WORKERS = 8
 SAMPLES_PER_CLASS = 1800  # set to None to use full dataset
 # Weight loss by inverse frequency using full train_data.json (helps when subset is balanced).
 USE_CLASS_WEIGHTS = True
+# Slightly softens logits; reduces overconfident wrong predictions (PyTorch >= 1.10).
+LABEL_SMOOTHING = 0.05
 
 
 def train_one_epoch(model, loader, criterion, optimizer, device, scaler=None):
@@ -110,10 +112,22 @@ def main():
 
     if USE_CLASS_WEIGHTS:
         cw = class_weights_from_full_train(DATA_DIR, label_map).to(device)
-        criterion = nn.CrossEntropyLoss(weight=cw)
-        print("Using class-weighted CrossEntropyLoss (weights from full train counts).")
+        try:
+            criterion = nn.CrossEntropyLoss(weight=cw, label_smoothing=LABEL_SMOOTHING)
+            print(
+                "Using class-weighted CrossEntropyLoss "
+                f"(weights from full train counts, label_smoothing={LABEL_SMOOTHING})."
+            )
+        except TypeError:
+            criterion = nn.CrossEntropyLoss(weight=cw)
+            print(
+                "Using class-weighted CrossEntropyLoss (label_smoothing not supported by this PyTorch)."
+            )
     else:
-        criterion = nn.CrossEntropyLoss()
+        try:
+            criterion = nn.CrossEntropyLoss(label_smoothing=LABEL_SMOOTHING)
+        except TypeError:
+            criterion = nn.CrossEntropyLoss()
 
     # ── Model ────────────────────────────────────────────────────────────────
     model = build_model(num_classes=num_classes).to(device)
